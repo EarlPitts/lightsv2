@@ -1,0 +1,68 @@
+#!/usr/bin/guile \
+-e main -s
+!#
+
+(use-modules (ice-9 receive))
+(use-modules (web client))
+(use-modules (rnrs bytevectors))
+(use-modules (json))
+(use-modules (srfi srfi-19))
+
+;; Update the catched values
+
+(define (+days day amount)
+  (let ((days-sec (* 60 60 24 amount)))
+    (time-utc->date (add-duration (date->time-utc day) (make-time time-duration 0 days-sec)))))
+
+(define week
+  (map (lambda (offset) (+days (current-date) offset))
+       (iota 7)))
+
+(define (get-date-string date)
+  (date->string date "~Y-~m-~d"))
+
+(define (create-url date)
+  (string-append "http://api.sunrise-sunset.org/json?lat=47.4979937&lng=19.0403594&formatted=0&date="
+                 (get-date-string date)))
+
+(define (get-responses)
+  (map
+    (lambda (day)
+      (receive
+        (resp body)
+        (http-get (create-url day))
+        (json-string->scm (utf8->string body))))
+  week))
+
+(define (sunsets responses)
+  (map
+    (lambda (res)
+      (assoc-ref (assoc-ref res "results") "sunset"))
+      responses))
+
+(define (cache)
+  (with-output-to-file
+    "sunsets.json" ; TODO Get this from the command line
+    (lambda () (scm->json (list->array 1 (sunsets (get-responses)))))))
+
+;; Turn on lights if sunset is near
+
+(define (format-date date-string)
+    (list->string (reverse (delete1! #\: (reverse (string->list date-string))))))
+
+(define (check-and-toggle)
+  (let* ((sunset
+           (array-ref (with-input-from-file
+                        "sunsets.json" ; TODO
+                        json->scm) 1))
+         (diff (time-difference (current-time) (date->time-utc (string->date (format-date sunset) "~Y-~m-~dT~H:~M:~S~z"))))
+         (5min (make-time time-duration 0 300))
+         (now (make-time time-duration 0 0)))
+         (if (and (time<=? diff 5min) (time>=? diff now)) ;; The difference is smaller than 5 minutes
+           (system "/usr/sbin/uhubctl --location 1-1 --ports 2 -a 1") ; TODO
+           #f)))
+
+(define (main args)
+  (cond ((and (= (length args) 2)
+              (string=? (cadr args) "cache")) (cache))
+        (else (check-and-toggle))))
